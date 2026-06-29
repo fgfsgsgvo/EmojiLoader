@@ -27,3 +27,4 @@ Thumbs.db
 # Project specific
 *.exe
 *.ico
+build_exe.bat

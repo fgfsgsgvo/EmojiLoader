@@ -50,9 +50,7 @@ build_exe.bat
 EmojiLoader/
 ├── face_emoji.py         # 主程序
 ├── requirements.txt      # 依赖列表
-├── build_exe.bat         # 打包脚本
-├── README.md             # 本文件
-└── dist/                 # 打包输出（运行 build_exe.bat 后生成）
+└── README.md             # 本文件
 ```
 
 ## 技术栈
