@@ -1,6 +1,7 @@
 """
-人脸表情包工具 v1.1
+人脸表情包工具 v1.2
 给图片中的人脸自动覆盖自定义表情包，支持多人脸、不同表情、自动旋转、缩放调节和拖拽微调。
+使用 OpenCV DNN (YuNet) 人脸检测，比 Haar Cascade 更准，支持侧脸/暗光。
 
 依赖: pip install opencv-python pillow
 运行: python face_emoji.py
@@ -13,6 +14,7 @@ import numpy as np
 from PIL import Image, ImageTk
 import math
 import os
+import sys
 from typing import Optional, Any
 
 # ──────────────────────────────────────────────
@@ -38,11 +40,10 @@ class FaceEmojiApp:
     FACE_CLICK_MARGIN: int = 10
     EMOJI_MIN_DIM: int = 4
 
-    # 检测参数
-    SCALE_FACTOR: float = 1.1
-    MIN_NEIGHBORS: int = 5
-    FACE_MIN_SIZE: int = 30
-    EYE_MIN_SIZE: int = 20
+    # 检测参数 — YuNet
+    YUNET_SCORE_THRESHOLD: float = 0.7
+    YUNET_NMS_THRESHOLD: float = 0.3
+    YUNET_TOP_K: int = 5000
     MAX_ANGLE: float = 45.0
 
     # 滑块范围
@@ -58,7 +59,7 @@ class FaceEmojiApp:
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("人脸表情包工具 v1.1")
+        self.root.title("人脸表情包工具 v1.2")
         self.root.geometry("1100x700")
         self.root.minsize(900, 600)
 
@@ -83,18 +84,27 @@ class FaceEmojiApp:
         # ─── 防抖 ───
         self._rebuild_timer: Optional[str] = None
 
-        # ─── OpenCV 检测器 ───
-        self.face_cascade: cv2.CascadeClassifier = cv2.CascadeClassifier(
-            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-        )
-        self.eye_cascade: cv2.CascadeClassifier = cv2.CascadeClassifier(
-            cv2.data.haarcascades + 'haarcascade_eye.xml'
+        # ─── OpenCV DNN 检测器 (YuNet) ───
+        model_path: str = self._resolve_model_path('face_detection_yunet_2023mar.onnx')
+        self.face_detector: cv2.FaceDetectorYN = cv2.FaceDetectorYN.create(
+            model=model_path, config='',
+            input_size=(320, 320),
+            score_threshold=self.YUNET_SCORE_THRESHOLD,
+            nms_threshold=self.YUNET_NMS_THRESHOLD,
+            top_k=self.YUNET_TOP_K,
         )
 
         self._build_ui()
         self.root.update_idletasks()
         self._canvas_w = max(self.canvas.winfo_width(), self.CANVAS_MIN_SIZE)
         self._canvas_h = max(self.canvas.winfo_height(), self.CANVAS_MIN_SIZE)
+
+    @staticmethod
+    def _resolve_model_path(filename: str) -> str:
+        """返回模型文件的完整路径（兼容开发环境和 PyInstaller 打包后）。"""
+        if getattr(sys, 'frozen', False):
+            return os.path.join(sys._MEIPASS, filename)
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
 
     # ════════════════ UI 构建 ════════════════
 
@@ -395,21 +405,37 @@ class FaceEmojiApp:
         try:
             img_rgb: np.ndarray = np.array(self.original_image.convert('RGB'))
             img_bgr: np.ndarray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-            gray: np.ndarray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+            height, width = img_bgr.shape[:2]
 
-            faces: np.ndarray = self.face_cascade.detectMultiScale(
-                gray, scaleFactor=self.SCALE_FACTOR, minNeighbors=self.MIN_NEIGHBORS,
-                minSize=(self.FACE_MIN_SIZE, self.FACE_MIN_SIZE)
-            )
+            # YuNet DNN 检测
+            self.face_detector.setInputSize((width, height))
+            _, faces = self.face_detector.detect(img_bgr)
 
-            if len(faces) == 0:
+            if faces is None or len(faces) == 0:
                 self.status_var.set('未检测到人脸')
                 self._set_info('未检测到人脸 😅\n\n试试换个角度或\n更清晰的照片')
                 return
 
             self.faces_data = []
-            for i, (fx, fy, fw, fh) in enumerate(faces):
-                angle: float = self._detect_angle(gray, (fx, fy, fw, fh))
+            for i in range(faces.shape[0]):
+                face_data = faces[i]
+                # YuNet 输出: [x, y, w, h, re_x, re_y, le_x, le_y, nose_x, nose_y,
+                #               rmouth_x, rmouth_y, lmouth_x, lmouth_y, confidence]
+                fx, fy, fw, fh = face_data[:4].astype(int)
+
+                # 从双眼关键点计算角度（YuNet 比 Haar 可靠得多）
+                le_x, le_y = face_data[6], face_data[7]   # 左眼
+                re_x, re_y = face_data[4], face_data[5]   # 右眼
+                dx: float = le_x - re_x
+                dy: float = le_y - re_y
+                if abs(dx) > 0:
+                    angle: float = math.degrees(math.atan2(dy, dx))
+                    if abs(angle) > self.MAX_ANGLE:
+                        angle = 0.0
+                else:
+                    angle = 0.0
+
+                # 裁剪缩略图
                 roi: Image.Image = self.original_image.crop((fx, fy, fx + fw, fy + fh))
                 thumb: Image.Image = roi.resize((self.THUMB_SIZE, self.THUMB_SIZE), Image.LANCZOS)
                 thumb_tk: ImageTk.PhotoImage = ImageTk.PhotoImage(thumb)
@@ -443,37 +469,6 @@ class FaceEmojiApp:
         except Exception as e:
             messagebox.showerror('错误', f'人脸检测失败:\n{e}')
             self.status_var.set('检测出错')
-
-    def _detect_angle(self, gray_img: np.ndarray, face_bbox: tuple[int, int, int, int]) -> float:
-        """通过双眼位置计算人脸倾斜角度。"""
-        fx, fy, fw, fh = face_bbox
-        face_roi: np.ndarray = gray_img[fy:fy + fh, fx:fx + fw]
-        if face_roi.size == 0:
-            return 0.0
-
-        eyes: np.ndarray = self.eye_cascade.detectMultiScale(
-            face_roi, self.SCALE_FACTOR, 3, minSize=(self.EYE_MIN_SIZE, self.EYE_MIN_SIZE)
-        )
-
-        if len(eyes) >= 2:
-            eyes_sorted = sorted(eyes, key=lambda e: e[0])
-            left = eyes_sorted[0]
-            right = eyes_sorted[-1]
-
-            lx: int = fx + left[0] + left[2] // 2
-            ly: int = fy + left[1] + left[3] // 2
-            rx: int = fx + right[0] + right[2] // 2
-            ry: int = fy + right[1] + right[3] // 2
-
-            dx: int = rx - lx
-            dy: int = ry - ly
-            if dx != 0:
-                angle: float = math.degrees(math.atan2(dy, dx))
-                if abs(angle) > self.MAX_ANGLE:
-                    return 0.0
-                return angle
-
-        return 0.0
 
     # ════════════════ 缩略图 ════════════════
 

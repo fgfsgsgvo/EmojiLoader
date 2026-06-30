@@ -28,3 +28,7 @@ Thumbs.db
 *.exe
 *.ico
 build_exe.bat
+
+# Tools (UPX etc.)
+tools/
+

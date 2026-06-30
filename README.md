@@ -48,14 +48,15 @@ build_exe.bat
 
 ```
 EmojiLoader/
-├── face_emoji.py         # 主程序
-├── requirements.txt      # 依赖列表
-└── README.md             # 本文件
+├── face_emoji.py                   # 主程序
+├── face_detection_yunet_2023mar.onnx  # YuNet 人脸检测模型（自动下载）
+├── requirements.txt                # 依赖列表
+└── README.md                       # 本文件
 ```
 
 ## 技术栈
 
 - Python + Tkinter（GUI）
-- OpenCV Haar Cascade（人脸检测 + 眼睛检测）
+- OpenCV DNN (YuNet) — 人脸检测 + 面部关键点定位（侧脸/暗光更准）
 - Pillow（图像合成）
 - PyInstaller（打包 exe）
